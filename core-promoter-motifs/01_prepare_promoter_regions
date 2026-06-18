@@ -1,0 +1,191 @@
+# TranscriptionAedes-core-promoter-motifs
+
+# Steps
+  # 01_prepare_promoter_regions.R
+  # 02_search_motifs.sh
+  # 03_plot_motifs.R
+
+####################################################################################################
+# 01_prepare_promoter_regions.R
+#
+# Language: R
+#
+# Aim:
+#   Generate BED files for INR, TATA box, and DPE motif searches around old TSS and updated TSSs = TSNs.
+#
+# Input:
+#   TSSlist_updated.txt
+#
+# Output:
+#   BED files for either the old/current annotated TSS or PRO-seq updated TSN intervals (INR/TATA/DPE motif windows), separated on strand.
+
+####################################################################################################
+
+
+library(dplyr)
+
+# Directories
+local_dir <- "../TSNcalling"
+setwd(local_dir)
+motif_dir <- file.path(local_dir, "core_promoter_motifs")
+
+# Load list with old/current annotated TSS and PRO-seq updated TSN coordinates
+tss <- read.delim(file.path(local_dir, "TSSlist_updated.txt"))
+
+# Keep only changed TSSs from the median filter/only those were TSN could be determined
+changed_tss <- tss %>%
+  filter(filter_same_RPM_median == TRUE)
+
+# Function to write bed output files
+write_bed <- function(df, outfile) {
+  write.table(
+    df,
+    file = outfile,
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = FALSE
+  )
+}
+
+# Split plus and minus
+plus_tss <- changed_tss %>%
+  filter(strand == "+")
+
+minus_tss <- changed_tss %>%
+  filter(strand == "-")
+
+
+
+####################################################
+# INR regions: TSS -20 to TSS +20
+####################################################
+
+write_bed(
+  data.frame(
+    chr = plus_tss$chr,
+    start = plus_tss$oldTSS - 20,
+    end = plus_tss$oldTSS + 20,
+    genename_isoform = plus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "oldTSS_INR_regions_plus.bed")
+)
+
+write_bed(
+  data.frame(
+    chr = plus_tss$chr,
+    start = plus_tss$newTSS - 20,
+    end = plus_tss$newTSS + 20,
+    genename_isoform = plus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "newTSS_INR_regions_plus.bed")
+)
+
+write_bed(
+  data.frame(
+    chr = minus_tss$chr,
+    start = minus_tss$oldTSS - 20,
+    end = minus_tss$oldTSS + 20,
+    genename_isoform = minus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "oldTSS_INR_regions_minus.bed")
+)
+
+write_bed(
+  data.frame(
+    chr = minus_tss$chr,
+    start = minus_tss$newTSS - 20,
+    end = minus_tss$newTSS + 20,
+    genename_isoform = minus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "newTSS_INR_regions_minus.bed")
+)
+
+
+####################################################
+# TATA regions: TSS -60 to TSS
+####################################################
+
+write_bed(
+  data.frame(
+    chr = plus_tss$chr,
+    start = plus_tss$oldTSS - 60,
+    end = plus_tss$oldTSS,
+    genename_isoform = plus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "oldTSS_TATA_regions_plus.bed")
+)
+
+write_bed(
+  data.frame(
+    chr = plus_tss$chr,
+    start = plus_tss$newTSS - 60,
+    end = plus_tss$newTSS,
+    genename_isoform = plus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "newTSS_TATA_regions_plus.bed")
+)
+
+write_bed(
+  data.frame(
+    chr = minus_tss$chr,
+    start = minus_tss$oldTSS,
+    end = minus_tss$oldTSS + 60,
+    genename_isoform = minus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "oldTSS_TATA_regions_minus.bed")
+)
+
+write_bed(
+  data.frame(
+    chr = minus_tss$chr,
+    start = minus_tss$newTSS,
+    end = minus_tss$newTSS + 60,
+    genename_isoform = minus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "newTSS_TATA_regions_minus.bed")
+)
+
+####################################################
+# DPE regions: TSS +20 to TSS +40
+####################################################
+
+write_bed(
+  data.frame(
+    chr = plus_tss$chr,
+    start = plus_tss$oldTSS + 20,
+    end = plus_tss$oldTSS + 40,
+    genename_isoform = plus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "oldTSS_DPE_regions_plus.bed")
+)
+
+write_bed(
+  data.frame(
+    chr = plus_tss$chr,
+    start = plus_tss$newTSS + 20,
+    end = plus_tss$newTSS + 40,
+    genename_isoform = plus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "newTSS_DPE_regions_plus.bed")
+)
+
+write_bed(
+  data.frame(
+    chr = minus_tss$chr,
+    start = minus_tss$oldTSS - 40,
+    end = minus_tss$oldTSS - 20,
+    genename_isoform = minus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "oldTSS_DPE_regions_minus.bed")
+)
+
+write_bed(
+  data.frame(
+    chr = minus_tss$chr,
+    start = minus_tss$newTSS - 40,
+    end = minus_tss$newTSS - 20,
+    genename_isoform = minus_tss$genename_isoform
+  ),
+  file.path(motif_dir, "newTSS_DPE_regions_minus.bed")
+)
