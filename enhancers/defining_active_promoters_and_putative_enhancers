@@ -1,0 +1,324 @@
+# TranscriptionAedes_enhancers-list
+
+
+# 01_defining_active_promoters_and_putative_enhancers.R
+
+# R script
+
+# Used dREG to identify all dTREs
+# Then generating genome-wide lists of active promoters and putative enhancers
+	# Criteria: dREG call as well as ATAC and/or H3K27ac peak
+
+
+####################################################################################################
+# Nascent transcription at putative enhancers in Aedes aegypti
+#
+# Processing of dREG TRE calls to annotate tx activate promoters vs putative enhancers
+#
+# Steps:
+#   0. Setup and loading in dREG calls of genome-wide TREs
+# 	1. Extend dREG calls to 1000 nt intervals centered on dREG center
+#   2. Split into promoter-overlapping and non-promoter regions
+#   3. Overlap both sets with ChIP/ATAC peaks
+#   4. Keep only regions overlapping ATAC and/or H3K27ac peaks
+#
+####################################################################################################
+
+# Load libraries
+library(GenomicRanges)
+library(rtracklayer)
+library(dplyr)
+
+# Set directories
+user_dir <- # .. 
+base_dir <- file.path(user_dir, "Enhancers")
+dreg_dir <- file.path(base_dir, "dREGoutput")
+chip_dir <- file.path(dreg_dir, "chipdata")
+
+# Input files
+dreg_file <- file.path(dreg_dir, "Aag2.dREG.peak.full.bed") # output from dREG server, run for PRO-seq Aag2 dataset
+tss_file  <- file.path(dreg_dir, "Aag2_updatedTSS_1000interval.bed") #  bed file with all gene transcription start sites from AaegL5 gff version 3, updated to TSN coordinates where applicable, and extended with 500 nt on each side
+
+# Output files
+dreg_1000nt          <- file.path(dreg_dir, "dREG_totalcalls_1000nt.bed")
+dreg_1000nt_metadata <- file.path(dreg_dir, "dREG_totalcalls_1000nt_metadata.bed")
+
+dreg_promoterhits  <- file.path(dreg_dir, "dREG_GenePromoters_1000nt.bed") # dREG calls that overlap with TSS +- 500 nt intervals
+dreg_nopromoterhits    <- file.path(dreg_dir, "dREG_NoGene_1000nt.bed") # all other/non-promoter dREG calls 
+
+putative_enhancers_1000nt      <- file.path(base_dir, "putative_enhancers_1000nt.bed") 
+putative_enhancers_originalsize  <- file.path(base_dir, "putative_enhancers_originalsize.bed")
+
+dreg_promoters_1000nt          <- file.path(base_dir, "dreg_promoters_1000nt.bed")
+dreg_promoters_originalsize      <- file.path(base_dir, "dreg_promoters_originalsize.bed")
+dreg_promoters_tss_file           <- file.path(base_dir, "dreg_promoters_TSSpm500.bed")
+dreg_promoters_tss_unique_file    <- file.path(base_dir, "dreg_promoters_TSSpm500_unique.bed")
+
+# functions for conversion
+
+# bed to GRanges
+bed_to_granges <- function(df) {
+  GRanges(
+    seqnames = df$chr,
+    ranges = IRanges(start = df$start + 1, end = df$end)
+  )
+}
+
+# GRanges to bed
+granges_to_bed_df <- function(gr) {
+  df <- as.data.frame(gr)
+  data.frame(
+    chr = df$seqnames,
+    start = df$start - 1,
+    end = df$end
+  )
+}
+
+# Standardize chr namings 
+add_chr_prefix <- function(x) {
+  ifelse(grepl("^chr", x), x, paste0("chr", x))
+}
+remove_chr_prefix <- function(x) {
+  gsub("^chr", "", x)
+}
+
+# For overlaps
+make_overlap_table <- function(regions, marks) {
+  overlap_table <- data.frame(row.names = paste0("region_", seq_along(regions)))
+
+  for (mark_name in names(marks)) {
+    message("Processing: ", mark_name)
+
+    hits <- findOverlaps(regions, marks[[mark_name]])
+    binary_overlap <- rep(0, length(regions))
+    binary_overlap[unique(queryHits(hits))] <- 1
+
+    overlap_table[[mark_name]] <- binary_overlap
+  }
+
+  coords <- as.data.frame(regions)[, c("seqnames", "start", "end")]
+  colnames(coords) <- c("chr", "start", "end")
+
+  cbind(coords, overlap_table)
+}
+
+
+###########################################################
+# 1. Load dREG calls and extend to 1000 nt sizes
+###########################################################
+
+dREG_aag2 <- read.table(dreg_file, header = TRUE)
+
+colnames(dREG_aag2) <- c(
+  "chr", "start", "end", "score", "probability", "center"
+)
+
+dREG_aag2$originalwidth <- dREG_aag2$end - dREG_aag2$start
+dREG_aag2$originalstart <- dREG_aag2$start
+dREG_aag2$originalend <- dREG_aag2$end
+
+# Extend to center +/- 500 bp
+dREG_aag2$start <- dREG_aag2$center - 500
+dREG_aag2$end   <- dREG_aag2$center + 500
+
+dREG_aag2$name <- paste0("dREG_totalcalls_", seq_len(nrow(dREG_aag2)))
+dREG_aag2$strand <- "."
+
+dREG_totalcalls_1000nt_bed <- dREG_aag2[, c(
+  "chr", "start", "end", "name", "score", "strand"
+)]
+
+dREG_totalcalls_1000nt_metadata_bed <- dREG_aag2[, c(
+  "chr", "start", "end", "name", "score", "strand",
+  "probability", "center", "originalwidth", "originalstart", "originalend"
+)]
+
+write.table(
+  dREG_totalcalls_1000nt_bed,
+  file = dreg_1000nt,
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE,
+  sep = "\t"
+)
+
+write.table(
+  dREG_totalcalls_1000nt_metadata_bed,
+  file = dreg_1000nt_metadata,
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE,
+  sep = "\t"
+)
+
+message("Total dREG calls extended to 1000 nt: ", nrow(dREG_totalcalls_1000nt_bed))
+
+
+
+###########################################################
+# 2. Split dREG calls into promoter-overlapping and non-promoter regions
+###########################################################
+
+dREG <- read.table(dreg_1000nt, header = TRUE, stringsAsFactors = FALSE)
+tss  <- read.table(tss_file, header = TRUE, stringsAsFactors = FALSE)
+
+gr_dREG <- bed_to_granges(dREG)
+gr_TSS  <- bed_to_granges(tss)
+
+dREG_NoGene <- gr_dREG[!gr_dREG %over% gr_TSS]
+dREG_GenePromoters <- gr_dREG[gr_dREG %over% gr_TSS]
+
+dREG_NoGene_df <- granges_to_bed_df(dREG_NoGene)
+dREG_GenePromoters_df <- granges_to_bed_df(dREG_GenePromoters)
+
+write.table(
+  dREG_NoGene_df,
+  file = dreg_nopromoterhits,
+  sep = "\t",
+  quote = FALSE,
+  col.names = TRUE,
+  row.names = FALSE
+)
+
+write.table(
+  dREG_GenePromoters_df,
+  file = dreg_promoterhits,
+  sep = "\t",
+  quote = FALSE,
+  col.names = TRUE,
+  row.names = FALSE
+)
+
+message("Non-promoter dREG calls: ", nrow(dREG_NoGene_df))
+message("Promoter-overlapping dREG calls: ", nrow(dREG_GenePromoters_df))
+
+
+###########################################################
+# 3. Overlap non-promoter and promoter dREG calls with ATAC-seq and H3K27ac ChIP-seq peaks
+###########################################################
+
+dREG_NoGene_df <- read.table(dreg_nopromoterhits, header = TRUE)
+dREG_GenePromoters_df <- read.table(dreg_promoterhits, header = TRUE)
+
+# Match chromosome naming to ChIP/ATAC files
+dREG_NoGene_df$chr <- add_chr_prefix(dREG_NoGene_df$chr)
+dREG_GenePromoters_df$chr <- add_chr_prefix(dREG_GenePromoters_df$chr)
+
+dREG_NoGene <- bed_to_granges(dREG_NoGene_df)
+dREG_GenePromoters <- bed_to_granges(dREG_GenePromoters_df)
+
+marks <- list(
+  ATAC = import(file.path(chip_dir, "ATAC_merged.bed")),
+  H3K27ac = import(file.path(chip_dir, "H3K27ac_merged.bed"))
+)
+
+overlap_summary_NoGene <- make_overlap_table(dREG_NoGene, marks)
+overlap_summary_GenePromoters <- make_overlap_table(dREG_GenePromoters, marks)
+
+
+###########################################################
+# 4. Visualize overlap with ATAC/ChIP-seq marks
+###########################################################
+
+overlap_summary_NoGene$overlap_category <- with(
+  overlap_summary_NoGene,
+  ifelse(
+    ATAC == 1 & H3K27ac == 0, "ATAC only",
+    ifelse(
+      ATAC == 0 & H3K27ac == 1, "H3K27ac only",
+      ifelse(ATAC == 1 & H3K27ac == 1, "Both", "Neither")
+    )
+  )
+)
+
+category_counts <- table(overlap_summary_NoGene$overlap_category)
+print(category_counts)
+
+pie(
+  category_counts,
+  col = c("violetred1", "violetred4", "palevioletred2", "pink1"),
+  main = "Overlap of non-promoter dREG calls with ATAC and H3K27ac"
+)
+
+
+###########################################################
+# 5. Filter non-promoter dREG calls for ATAC and/or H3K27ac
+###########################################################
+
+putative_enhancers <- overlap_summary_NoGene[
+  overlap_summary_NoGene$ATAC == 1 | overlap_summary_NoGene$H3K27ac == 1,
+]
+
+message("Putative enhancers retained: ", nrow(putative_enhancers))
+
+putative_enhancers_bed <- putative_enhancers[, 1:3]
+putative_enhancers_bed$start <- putative_enhancers_bed$start - 1
+putative_enhancers_bed$chr <- remove_chr_prefix(putative_enhancers_bed$chr)
+
+write.table(
+  putative_enhancers_bed,
+  file = putative_enhancers_1000nt,
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE,
+  sep = "\t"
+)
+
+putative_enhancers_originalsize <- putative_enhancers_bed %>%
+  left_join(
+    dREG_totalcalls_1000nt_metadata_bed %>%
+      select(chr, start, end, originalstart, originalend),
+    by = c("chr", "start", "end")
+  ) %>%
+  select(chr, originalstart, originalend)
+
+write.table(
+  putative_enhancers_originalsize,
+  file = putative_enhancers_originalsize,
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE,
+  col.names = TRUE
+)
+
+
+###########################################################
+# 6. Filter promoter-overlapping dREG calls for ATAC and/or H3K27ac
+###########################################################
+
+dreg_promoters <- overlap_summary_GenePromoters[
+  overlap_summary_GenePromoters$ATAC == 1 | overlap_summary_GenePromoters$H3K27ac == 1,
+]
+
+message("dREG promoters retained: ", nrow(dreg_promoters))
+
+dreg_promoters_bed <- dreg_promoters[, 1:3]
+dreg_promoters_bed$start <- dreg_promoters_bed$start - 1
+dreg_promoters_bed$chr <- remove_chr_prefix(dreg_promoters_bed$chr)
+
+write.table(
+  dreg_promoters_bed,
+  file = dreg_promoters_1000nt,
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE,
+  sep = "\t"
+)
+
+dreg_promoters_originalsize <- dreg_promoters_bed %>%
+  left_join(
+    dREG_totalcalls_1000nt_metadata_bed %>%
+      select(chr, start, end, originalstart, originalend),
+    by = c("chr", "start", "end")
+  ) %>%
+  select(chr, originalstart, originalend)
+
+write.table(
+  dreg_promoters_originalsize,
+  file = dreg_promoters_originalsize,
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE,
+  col.names = TRUE
+)
+
