@@ -1,0 +1,442 @@
+TranscriptionAedes_stability-miRNA
+
+# Plotting distribution of stability for those transcripts that have target sites in 3UTRs for miRNAs
+
+# Steps
+	# Bash script to define how to find miRNA targets
+	# Running all searches 
+	# Processing in R 
+
+# miRNA levels in Aag2 from Miesen et al. 2016
+	# Top3 / highest 3
+		# aae-miR-2940-3p
+		# aae-miR-184 
+		# aae-bantam-3p
+	# Low3 / lowest 3
+		# aae-miR-929
+		# aae-miR-316
+		# aae-miR-932-5p
+# Sequences as also specified in Table 2
+
+########################################################################################################################################
+#											Searching for miRNA target sequences
+########################################################################################################################################
+
+####################################################################################################
+# run_mirna_target_search.sh
+#
+# Language: Bash / Unix
+#
+# Aim:
+#   Search Aedes aegypti UTR FASTA files for exact miRNA seed target matches.
+#
+# Input, 3' UTRs extracted from gff file (AaegL5 version 3)
+#   UTRs_plus.fa
+#   UTRs_minus.fa
+#
+# Arguments:
+#   1. miRNA name
+#   2. target motif sequence
+#   3. strand: plus or minus
+#   4. kmer class: 6mer, 7mer, or 8mer
+#
+# Output:
+#   targets_<miRNA>_<strand>_<kmer>.txt
+####################################################################################################
+
+
+#!/bin/bash -l
+#$ -S /bin/bash
+#$ -cwd
+#$ -V
+#$ -pe smp 1
+
+set -euo pipefail
+
+# directory 
+WORKDIR="/home/femkevh/PROseqAag2/stability/miRNA"
+cd "$WORKDIR"
+
+# fasta files for UTR sequences
+FASTA_PLUS="$WORKDIR/UTRs_plus.fa"
+FASTA_MINUS="$WORKDIR/UTRs_minus.fa"
+
+# parameters for miRNA target search: miRNA name, target sequence, strand, kmer
+MIRNA="${1:?Usage: $0 <mirna> <motif> <plus|minus> <6mer|7mer|8mer>}"
+MOTIF="${2:?Usage: $0 <mirna> <motif> <plus|minus> <6mer|7mer|8mer>}"
+STRAND="${3:?Usage: $0 <mirna> <motif> <plus|minus> <6mer|7mer|8mer>}"
+KMER="${4:?Usage: $0 <mirna> <motif> <plus|minus> <6mer|7mer|8mer>}"
+
+echo "Running: $MIRNA | $STRAND | $KMER | motif=$MOTIF"
+
+if [[ "$STRAND" == "plus" ]]; then
+    FASTA="$FASTA_PLUS"
+elif [[ "$STRAND" == "minus" ]]; then
+    FASTA="$FASTA_MINUS"
+else
+    echo "ERROR: STRAND must be plus or minus" >&2
+    exit 1
+fi
+
+OUTPUT_FILE="targets_${MIRNA}_${STRAND}_${KMER}.txt"
+echo -e "genenamefull\ttarget_position" > "$OUTPUT_FILE"
+
+genenamefull=""
+
+# header line with > to substract genename and then next line is the actual sequence
+
+while IFS= read -r line; do
+    if [[ "$line" =~ ^\> ]]; then
+        genenamefull="${line#>}"
+    else
+        echo "$line" | grep -b -o "$MOTIF" | \
+        awk -F: -v gene="$genenamefull" 'BEGIN{OFS="\t"} {print gene, $1}' >> "$OUTPUT_FILE" || true
+    fi
+done < "$FASTA"
+
+
+########################################################################################################################################
+#											Running the miRNA searches
+########################################################################################################################################
+
+# Example for running all aae-miR-2940-3p searches
+	# Searching for the 6mer/7mer/8mer matches, the plus and minus hits are later merged again
+
+qsub -N aae-miR-2940-3p_plus_6mer  -e aae-miR-2940-3p_plus_6mer.err.txt  -o aae-miR-2940-3p_plus_6mer.out.txt  run_mirna_target_search.sh aae-miR-2940-3p TGTCGA plus 6mer
+qsub -N aae-miR-2940-3p_minus_6mer -e aae-miR-2940-3p_minus_6mer.err.txt -o aae-miR-2940-3p_minus_6mer.out.txt run_mirna_target_search.sh aae-miR-2940-3p TCGACA minus 6mer
+qsub -N aae-miR-2940-3p_plus_7mer  -e aae-miR-2940-3p_plus_7mer.err.txt  -o aae-miR-2940-3p_plus_7mer.out.txt  run_mirna_target_search.sh aae-miR-2940-3p CTGTCGA plus 7mer
+qsub -N aae-miR-2940-3p_minus_7mer -e aae-miR-2940-3p_minus_7mer.err.txt -o aae-miR-2940-3p_minus_7mer.out.txt run_mirna_target_search.sh aae-miR-2940-3p TCGACAG minus 7mer
+qsub -N aae-miR-2940-3p_plus_8mer  -e aae-miR-2940-3p_plus_8mer.err.txt  -o aae-miR-2940-3p_plus_8mer.out.txt  run_mirna_target_search.sh aae-miR-2940-3p CTGTCGAA plus 8mer
+qsub -N aae-miR-2940-3p_minus_8mer -e aae-miR-2940-3p_minus_8mer.err.txt -o aae-miR-2940-3p_minus_8mer.out.txt run_mirna_target_search.sh aae-miR-2940-3p TTCGACAG minus 8mer
+
+########################################################################################################################################
+#											Processing in R
+########################################################################################################################################
+
+# Switch to R 
+
+
+####################################################################################################
+# plot_stability_by_miRNA_targets.R
+#
+# Language: R
+#
+# Aim:
+#   Compare transcript stability between genes with and without predicted miRNA target sites.
+#
+# Input:
+#   targets_<miRNA>_<strand>_<kmer>.txt # output from running the miRNA searches
+#   Totalcounts_norm.tsv # stability values # PRO-seq over mRNA-seq ratios)
+#   VectorBase-60_AaegyptiLVP_AGWG.gff # gff file
+#
+# Output:
+#   eCDF plots of MminP grouped by strongest miRNA target class (8mer > 7mer > 6mer > none)
+#   Genes with both high- and low-abundance miRNA target sites are counted as high
+#
+####################################################################################################
+
+# Load libraries
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(purrr)
+library(rtracklayer)
+library(tibble)
+
+# Directories and file locations
+stability_dir <- "../Stability"
+miRNA_dir <- "../stability/miRNA"
+gff_file <- "VectorBase-60_AaegyptiLVP_AGWG.gff"
+setwd(miRNA_dir)
+
+
+
+# Specify miRNAs
+# For highest and lowest 3 miRNAs
+miRNAs <- c("aae-miR-2940-3p", "aae-miR-184", "aae-bantam-3p",
+            "aae-miR-929", "aae-miR-316", "aae-miR-932-5p")
+# Into the 2 groups
+high_miRNAs <- c("aae-miR-2940-3p", "aae-miR-184", "aae-bantam-3p")
+low_miRNAs <- c("aae-miR-929", "aae-miR-316", "aae-miR-932-5p")
+
+# kmers
+kmers <- c("6mer", "7mer", "8mer")
+
+
+
+# Settings for filtering and visualisation
+# genes with both HIGH and LOW hits are counted as HIGH 
+collapse_both_to_high <- TRUE
+
+# filtering for minimal coverage
+keep_only_protein_coding <- TRUE
+min_p_avg <- 1
+min_m_avg <- 1
+
+# bootstrap to 1000 for ecdf confidence/ribbons
+set.seed(1)
+B <- 1000
+grid_n <- 300
+
+# colors 
+kmer_cols <- c(
+  "none" = "blue",
+  "6mer" = "#8da0cb",
+  "7mer" = "#fc8d62",
+  "8mer" = "#66c2a5"
+)
+
+#################################################
+# Function to process the miRNA target hits
+#################################################
+
+read_mirna_targets <- function(miRNA, kmer) {
+  
+  plus_file  <- paste0("targets_", miRNA, "_plus_",  kmer, ".txt")
+  minus_file <- paste0("targets_", miRNA, "_minus_", kmer, ".txt")
+  
+  target_plus  <- read.delim(plus_file, header = TRUE, stringsAsFactors = FALSE)
+  target_minus <- read.delim(minus_file, header = TRUE, stringsAsFactors = FALSE)
+  
+  bind_rows(target_plus, target_minus) %>%
+    mutate(
+      genenamefull = trimws(as.character(genenamefull)),
+      target_position = suppressWarnings(as.numeric(target_position))
+    ) %>%
+    filter(!is.na(genenamefull), genenamefull != "") %>%
+    filter(!is.na(target_position), target_position >= 0) %>%
+    distinct(genenamefull, .keep_all = TRUE) %>%
+    transmute(
+      gene = genenamefull,
+      miRNA = miRNA,
+      kmer = kmer,
+      target_position = target_position
+    )
+}
+
+
+
+# Loading in all the target files
+
+all_targets_long <- expand.grid(miRNA = miRNAs, kmer = kmers, stringsAsFactors = FALSE) %>%
+  split(seq_len(nrow(.))) %>%
+  map_dfr(~ read_mirna_targets(.x$miRNA, .x$kmer)) %>%
+  mutate(
+    category = case_when(
+      miRNA %in% high_miRNAs ~ "high",
+      miRNA %in% low_miRNAs ~ "low",
+      TRUE ~ NA_character_
+    ),
+    kmer_rank = case_when(
+      kmer == "6mer" ~ 1L,
+      kmer == "7mer" ~ 2L,
+      kmer == "8mer" ~ 3L
+    )
+  )
+
+
+
+# Loading in the stability scores and gff/annotation file
+
+Totalcounts_norm <- read.table(
+  file.path(stability_dir, "Totalcounts_norm.tsv"),
+  header = TRUE, sep = "\t", stringsAsFactors = FALSE
+)
+
+gff_annot <- rtracklayer::import(gff_file) %>%
+  as.data.frame() %>%
+  tibble::as_tibble()
+
+total_annot <- Totalcounts_norm %>%
+  left_join(gff_annot %>% select(ID, type), by = c("gene" = "ID"))
+
+
+
+# Assignment of targets/hits to strongest class (8mer > 7mer > 6mer)
+
+gene_target_summary <- all_targets_long %>%
+  group_by(gene, category) %>%
+  summarise(
+    strongest_kmer_rank = max(kmer_rank),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    strongest_kmer = case_when(
+      strongest_kmer_rank == 3L ~ "8mer",
+      strongest_kmer_rank == 2L ~ "7mer",
+      strongest_kmer_rank == 1L ~ "6mer",
+      TRUE ~ "none"
+    )
+  ) %>%
+  select(-strongest_kmer_rank) %>%
+  pivot_wider(
+    names_from = category,
+    values_from = strongest_kmer,
+    names_prefix = "strongest_"
+  )
+
+mirna_targets_df <- total_annot %>%
+  left_join(gene_target_summary, by = "gene") %>%
+  mutate(
+    strongest_high = ifelse(is.na(strongest_high), "none", strongest_high),
+    strongest_low  = ifelse(is.na(strongest_low),  "none", strongest_low),
+    strongest_high = factor(strongest_high, levels = c("none", "6mer", "7mer", "8mer")),
+    strongest_low  = factor(strongest_low,  levels = c("none", "6mer", "7mer", "8mer"))
+  )
+
+
+# Define the groups
+mirna_targets_df <- mirna_targets_df %>%
+  mutate(
+    target_group_raw = case_when(
+      strongest_high != "none" & strongest_low != "none" ~ "both",
+      strongest_high != "none" ~ "high_only",
+      strongest_low  != "none" ~ "low_only",
+      TRUE ~ "none"
+    )
+  )
+
+# collapsed grouping: both -> high
+if (collapse_both_to_high) {
+  mirna_targets_df <- mirna_targets_df %>%
+    mutate(
+      target_group_collapsed = case_when(
+        strongest_high != "none" ~ "high",
+        strongest_low  != "none" ~ "low",
+        TRUE ~ "none"
+      )
+    )
+} else {
+  mirna_targets_df <- mirna_targets_df %>%
+    mutate(
+      target_group_collapsed = case_when(
+        target_group_raw == "both" ~ "both",
+        target_group_raw == "high_only" ~ "high",
+        target_group_raw == "low_only" ~ "low",
+        TRUE ~ "none"
+      )
+    )
+}
+
+
+# Only plot stability scores for protein_coding and minimal coverage 
+
+mirna_targets_df_filtered <- mirna_targets_df
+
+if (keep_only_protein_coding) {
+  mirna_targets_df_filtered <- mirna_targets_df_filtered %>%
+    filter(type == "protein_coding_gene")
+}
+
+mirna_targets_df_filtered <- mirna_targets_df_filtered %>%
+  filter(p_avg > min_p_avg, m_avg > min_m_avg)
+
+
+#####################################################
+# Function: dataframe for ecdf + ribbons
+#####################################################
+
+make_ecdf_ci_df <- function(df, group_var, value_var = "MminP", B = 1000, grid_n = 300) {
+  
+  groups <- levels(df[[group_var]])
+  ci_list <- list()
+  
+  for (g in groups) {
+    x <- sort(df[[value_var]][df[[group_var]] == g])
+    if (length(x) < 2) next
+    
+    grid_x <- seq(min(x), max(x), length.out = grid_n)
+    Fhat <- stats::ecdf(x)(grid_x)
+    
+    boot_mat <- replicate(B, {
+      xb <- sample(x, replace = TRUE)
+      stats::ecdf(xb)(grid_x)
+    })
+    
+    lo <- apply(boot_mat, 1, quantile, probs = 0.025)
+    hi <- apply(boot_mat, 1, quantile, probs = 0.975)
+    
+    ci_list[[g]] <- data.frame(
+      MminP = grid_x,
+      ecdf = Fhat,
+      lo = lo,
+      hi = hi,
+      group = g
+    )
+  }
+  
+  ci_df <- do.call(rbind, ci_list)
+  ci_df$group <- factor(ci_df$group, levels = groups)
+  ci_df
+}
+
+
+#####################################################
+# Plotting distribution of stability scores for miRNA targets of top3 expressed miRNAs, separated by kmer
+#####################################################
+
+# So for the HIGH miRNA targets, the eCDF + ribbons for none / 6mer / 7mer / 8mer groups
+
+plot_high_df <- mirna_targets_df_filtered %>%
+  mutate(group = factor(strongest_high, levels = c("none", "6mer", "7mer", "8mer")))
+
+n_tbl_high <- plot_high_df %>% count(group, name = "n")
+print(n_tbl_high)
+
+ci_df_high <- make_ecdf_ci_df(plot_high_df, group_var = "group", value_var = "MminP",
+                              B = B, grid_n = grid_n)
+
+lab_map_high <- setNames(
+  paste0(n_tbl_high$group, " (n=", n_tbl_high$n, ")"),
+  n_tbl_high$group
+)
+
+p_ecdf_high <- ggplot(ci_df_high, aes(MminP, ecdf, color = group, fill = group)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, color = NA) +
+  geom_step(linewidth = 1) +
+  scale_color_manual(values = kmer_cols, breaks = names(lab_map_high), labels = lab_map_high, drop = FALSE) +
+  scale_fill_manual(values = kmer_cols, breaks = names(lab_map_high), labels = lab_map_high, drop = FALSE) +
+  coord_cartesian(ylim = c(0, 1), expand = FALSE) +
+  labs(
+    title = "eCDF of MminP by strongest HIGH-miRNA target class",
+    subtitle = "Genes with both HIGH and LOW hits are counted in HIGH",
+    x = "MminP", y = "eCDF", color = "Group", fill = "Group"
+  ) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(-8, 8, 2))
+
+print(p_ecdf_high)
+
+
+
+# Same but then for LOW miRNAs (lowest 3 expressed miRNAs in Aag2)
+
+plot_low_df <- mirna_targets_df_filtered %>%
+  mutate(group = factor(strongest_low, levels = c("none", "6mer", "7mer", "8mer")))
+
+n_tbl_low <- plot_low_df %>% count(group, name = "n")
+print(n_tbl_low)
+
+ci_df_low <- make_ecdf_ci_df(plot_low_df, group_var = "group", value_var = "MminP",
+                             B = B, grid_n = grid_n)
+
+lab_map_low <- setNames(
+  paste0(n_tbl_low$group, " (n=", n_tbl_low$n, ")"),
+  n_tbl_low$group
+)
+
+p_ecdf_low <- ggplot(ci_df_low, aes(MminP, ecdf, color = group, fill = group)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, color = NA) +
+  geom_step(linewidth = 1) +
+  scale_color_manual(values = kmer_cols, breaks = names(lab_map_low), labels = lab_map_low, drop = FALSE) +
+  scale_fill_manual(values = kmer_cols, breaks = names(lab_map_low), labels = lab_map_low, drop = FALSE) +
+  coord_cartesian(ylim = c(0, 1), expand = FALSE) +
+  labs(
+    title = "eCDF of MminP by strongest LOW-miRNA target class",
+    subtitle = "Supplementary analysis",
+    x = "MminP", y = "eCDF", color = "Group", fill = "Group"
+  ) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(-8, 8, 2))
+
+print(p_ecdf_low)
